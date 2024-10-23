@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QMessageBox, QComboBox)
 from PyQt6.QtCore import Qt
 from .paper_searcher import PaperSearcher
-from .paper_manager import PaperManager, Paper
+from .paper_manager import PaperManager
 from datetime import datetime
 import logging
 
@@ -23,6 +23,15 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
         layout = QVBoxLayout(central_widget)
 
+        # API源选择
+        api_layout = QHBoxLayout()
+        api_label = QLabel("API源:")
+        self.api_selector = QComboBox()
+        self.api_selector.addItems(["Crossref", "PubMed", "PMC Open Access"])
+        api_layout.addWidget(api_label)
+        api_layout.addWidget(self.api_selector)
+        layout.addLayout(api_layout)
+
         # 搜索部分
         search_layout = QHBoxLayout()
         self.search_input = QLineEdit()
@@ -34,12 +43,8 @@ class MainWindow(QMainWindow):
 
         # 年份筛选
         filter_layout = QHBoxLayout()
-        self.start_year = QComboBox()
-        self.end_year = QComboBox()
-        current_year = datetime.now().year
-        years = [str(year) for year in range(current_year, current_year - 50, -1)]
-        self.start_year.addItems(years)
-        self.end_year.addItems(years)
+        self.start_year = QLineEdit()
+        self.end_year = QLineEdit()
         filter_layout.addWidget(QLabel("开始年份:"))
         filter_layout.addWidget(self.start_year)
         filter_layout.addWidget(QLabel("结束年份:"))
@@ -50,15 +55,6 @@ class MainWindow(QMainWindow):
         self.paper_list = QListWidget()
         layout.addWidget(self.paper_list)
 
-        # 关键词部分
-        keyword_layout = QHBoxLayout()
-        self.keyword_input = QLineEdit()
-        add_keyword_button = QPushButton("添加关键词")
-        add_keyword_button.clicked.connect(self.add_keyword)
-        keyword_layout.addWidget(self.keyword_input)
-        keyword_layout.addWidget(add_keyword_button)
-        layout.addLayout(keyword_layout)
-
         # 下载按钮
         self.download_button = QPushButton("下载论文")
         self.download_button.clicked.connect(self.download_paper)
@@ -66,34 +62,55 @@ class MainWindow(QMainWindow):
 
     def search_papers(self):
         keywords = self.search_input.text()
-        start_year = int(self.start_year.currentText())
-        end_year = int(self.end_year.currentText())
-        self.papers = self.paper_searcher.search_papers(keywords, start_year, end_year)
+        start_year = self.start_year.text()
+        end_year = self.end_year.text()
+        api_source = self.api_selector.currentText().lower()
+
+        if api_source == 'crossref':
+            self.papers = self.paper_searcher.search_papers_crossref(keywords, start_year, end_year)
+        elif api_source == 'pubmed':
+            self.papers = self.paper_searcher.search_papers_pubmed(keywords, start_year, end_year)
+        elif api_source == 'pmc open access':
+            self.papers = self.paper_searcher.search_papers_pmc(keywords, start_year, end_year)
+
         self.paper_list.clear()
         for paper in self.papers:
-            self.paper_list.addItem(f"{paper['title']} ({paper['year']})")
-
-    def add_keyword(self):
-        selected_items = self.paper_list.selectedItems()
-        if selected_items:
-            paper_index = self.paper_list.row(selected_items[0])
-            keyword = self.keyword_input.text()
-            self.paper_manager.add_keyword_to_paper(paper_index, keyword)
-            self.keyword_input.clear()
+            self.paper_list.addItem(f"{paper['title']} ({paper.get('year', 'N/A')})")
 
     def download_paper(self):
         selected_items = self.paper_list.selectedItems()
         if selected_items:
             paper_index = self.paper_list.row(selected_items[0])
             paper = self.papers[paper_index]
-            result = self.paper_searcher.download_or_get_abstract(paper['doi'], paper['title'])
+            api_source = self.api_selector.currentText().lower()
+            if api_source == 'pmc open access':
+                api_source = 'pmc'  # 调整为与 PaperSearcher 中的方法名匹配
+            
+            logging.info(f"Attempting to download paper: {paper.get('title', 'Unknown Title')}")
+            result = self.paper_searcher.download_or_get_abstract(paper, api_source)
+            
             if result:
-                if result['type'] == 'pdf':
-                    message = f"论文PDF已下载到: {result['path']}"
+                paper_data = {
+                    'title': paper.get('title', ''),
+                    'abstract': paper.get('abstract', ''),
+                    'url': paper.get('url', ''),
+                    'year': paper.get('year'),
+                    'doi': paper.get('doi'),
+                    'pmid': paper.get('pmid'),
+                    'pmcid': paper.get('pmcid')
+                }
+                if result['type'] == 'both':
+                    paper_id = self.paper_manager.add_paper(paper_data, api_source, result['abstract_path'])
+                    self.paper_manager.update_paper_pdf_path(paper_id, result['pdf_path'])
+                    message = f"论文摘要已保存到: {result['abstract_path']}\nPDF已保存到: {result['pdf_path']}"
                 else:
+                    paper_id = self.paper_manager.add_paper(paper_data, api_source, result['path'])
                     message = f"论文摘要已保存到: {result['path']}"
-                paper_id = self.paper_manager.add_paper(paper, result['path'])
-                self.paper_manager.update_paper_local_path(paper_id, result['path'])
+                logging.info(message)
                 QMessageBox.information(self, "操作成功", message)
             else:
-                QMessageBox.warning(self, "操作失败", "无法下载论文或获取摘要，请检查控制台输出以获取更多信息")
+                error_message = "无法获取摘要或PDF，请检查控制台输出以获取更多信息"
+                logging.error(error_message)
+                QMessageBox.warning(self, "操作失败", error_message)
+        else:
+            logging.warning("No paper selected for download")
