@@ -32,8 +32,7 @@ class PaperManager:
              pmid TEXT,
              pmcid TEXT,
              api_source TEXT,
-             local_path TEXT,
-             pdf_path TEXT)
+             local_path TEXT)
         ''')
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS keywords
@@ -44,12 +43,8 @@ class PaperManager:
         self.conn.commit()
 
     def update_table_structure(self):
-        cursor = self.conn.cursor()
-        cursor.execute("PRAGMA table_info(papers)")
-        columns = [column[1] for column in cursor.fetchall()]
-        if 'pdf_path' not in columns:
-            cursor.execute("ALTER TABLE papers ADD COLUMN pdf_path TEXT")
-        self.conn.commit()
+        # 由于我们不再单独存储 pdf_path，这个方法可以保持为空或删除
+        pass
 
     def add_paper(self, paper, api_source, local_path=None):
         cursor = self.conn.cursor()
@@ -111,13 +106,6 @@ class PaperManager:
             WHERE title LIKE ? OR abstract LIKE ?
         ''', (f'%{query}%', f'%{query}%'))
         return cursor.fetchall()
-
-    def update_paper_pdf_path(self, paper_id, pdf_path):
-        cursor = self.conn.cursor()
-        cursor.execute('''
-            UPDATE papers SET pdf_path = ? WHERE id = ?
-        ''', (pdf_path, paper_id))
-        self.conn.commit()
 
     def __del__(self):
         self.conn.close()

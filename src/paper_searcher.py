@@ -1,7 +1,10 @@
 import requests
+from requests.exceptions import TooManyRedirects, RequestException
 import os
 import xml.etree.ElementTree as ET
 import logging
+from bs4 import BeautifulSoup
+import re
 
 class PaperSearcher:
     def __init__(self, download_dir='downloads'):
@@ -15,6 +18,12 @@ class PaperSearcher:
         self.headers = {
             'User-Agent': 'YourApp/1.0 (mailto:your-email@example.com)'
         }
+        self.sci_hub_url = "https://sci-hub.se/"  # 注意：这个URL可能会经常变化
+        self.session = requests.Session()
+        self.session.max_redirects = 5  # 限制重定向次数
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        })
 
     def search_papers_crossref(self, keywords, start_year=None, end_year=None):
         params = {
@@ -156,41 +165,152 @@ class PaperSearcher:
         return None
 
     def download_or_get_abstract(self, paper, api_source):
+        """
+        注意：PDF下载功能仅适用于PubMed和Crossref API。
+        对于其他API源（如PMC），将使用其原有的下载逻辑。
+        """
         if api_source == 'crossref':
             return self.download_or_get_abstract_crossref(paper['doi'], paper['title'])
         elif api_source == 'pubmed':
             return self.download_or_get_abstract_pubmed(paper['pmid'], paper['title'])
         elif api_source == 'pmc':
-            pdf_result = self.download_pdf_pmc(paper['pmcid'], paper['title'])
-            if pdf_result:
-                return pdf_result
-            else:
-                return self.download_or_get_abstract_pmc(paper['pmcid'], paper['title'])
+            return self.download_pdf_pmc(paper['pmcid'], paper['title'])
+        else:
+            logging.warning(f"Unsupported API source: {api_source}")
+            return None
 
     def download_or_get_abstract_crossref(self, doi, title):
         url = f"https://doi.org/{doi}"
-        response = requests.get(url, headers=self.headers)
+        try:
+            response = self.session.get(url, allow_redirects=True, timeout=30)
+            response.raise_for_status()
+            if response.status_code == 200:
+                pdf_url = self.extract_pdf_url(response.url, response.text)
+                if pdf_url:
+                    pdf_result = self.download_pdf(pdf_url, title, 'crossref')
+                    if pdf_result:
+                        return pdf_result
+                
+                # 如果无法直接获取PDF，尝试使用Sci-Hub
+                sci_hub_result = self.try_sci_hub(doi, title)
+                if sci_hub_result:
+                    return sci_hub_result
+
+                # 如果无法获取PDF，尝试提取摘要
+                abstract = self.extract_abstract(response.text)
+                if abstract:
+                    filename = self.get_valid_filename(title + '.txt')  # 修改这里，使用 .txt 扩展名
+                    filepath = os.path.join(self.download_dir, filename)
+                    with open(filepath, 'w', encoding='utf-8') as f:
+                        f.write(abstract)
+                    logging.info(f"Saved Crossref abstract to {filepath}")
+                    return {'type': 'abstract', 'path': filepath}
+                else:
+                    logging.warning(f"Unable to extract abstract for DOI: {doi}")
+                    return {'type': 'error', 'message': '无法提取摘要'}
+
+            return {'type': 'error', 'message': '无法获取文章内容'}
+        except TooManyRedirects:
+            logging.error(f"Too many redirects when accessing DOI: {doi}")
+            return {'type': 'error', 'message': '访问DOI时遇到太多重定向'}
+        except RequestException as e:
+            logging.error(f"Error accessing DOI {doi}: {str(e)}")
+            return {'type': 'error', 'message': f'访问DOI时出错: {str(e)}'}
+
+    def extract_pdf_url(self, url, html_content):
+        # 尝试从URL中直接识别PDF链接
+        if url.endswith('.pdf'):
+            return url
+        
+        # 使用BeautifulSoup解析HTML内容
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # 查找可能的PDF链接
+        pdf_links = soup.find_all('a', href=re.compile(r'\.pdf$'))
+        if pdf_links:
+            return pdf_links[0]['href']
+        
+        # 查找特定的下载按钮或链接（这部分可能需要根据不同的出版商网站进行定制）
+        download_links = soup.find_all('a', text=re.compile(r'Download PDF', re.I))
+        if download_links:
+            return download_links[0]['href']
+        
+        return None
+
+    def try_sci_hub(self, doi, title):
+        sci_hub_url = f"{self.sci_hub_url}{doi}"
+        response = self.session.get(sci_hub_url)
         if response.status_code == 200:
-            filename = self.get_valid_filename(title + '_abstract.txt')
-            filepath = os.path.join(self.download_dir, filename)
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(response.text)
-            return {'type': 'abstract', 'path': filepath}
-        else:
-            print(f"无法获取Crossref摘要: {doi}")
+            pdf_url = self.extract_pdf_url_from_sci_hub(response.text)
+            if pdf_url:
+                return self.download_pdf(pdf_url, title)
+        return None
+
+    def extract_pdf_url_from_sci_hub(self, html_content):
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # 查找嵌入的PDF查看器
+        embed = soup.find('embed', type='application/pdf')
+        if embed and 'src' in embed.attrs:
+            return embed['src']
+        
+        # 查找下载按钮
+        download_button = soup.find('button', id='download')
+        if download_button and 'onclick' in download_button.attrs:
+            onclick = download_button['onclick']
+            match = re.search(r"location.href='(.+?)'", onclick)
+            if match:
+                return match.group(1)
+        
+        # 查找iframe
+        iframe = soup.find('iframe')
+        if iframe and 'src' in iframe.attrs:
+            return iframe['src']
+        
+        return None
+
+    def download_pdf(self, url, title, api_source):
+        """
+        下载PDF文件。
+        注意：此方法仅用于PubMed和Crossref API。
+        """
+        if api_source not in ['pubmed', 'crossref']:
+            logging.warning(f"PDF download not supported for API source: {api_source}")
             return None
+
+        try:
+            response = self.session.get(url, stream=True)
+            if response.status_code == 200 and response.headers.get('Content-Type', '').startswith('application/pdf'):
+                filename = self.get_valid_filename(title) + '.pdf'  # 修改这里，明确添加 .pdf 扩展名
+                filepath = os.path.join(self.download_dir, filename)
+                with open(filepath, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                logging.info(f"Saved PDF from {api_source} to {filepath}")
+                return {'type': 'pdf', 'path': filepath}
+            else:
+                logging.warning(f"Failed to download PDF from {api_source}. URL: {url}. Status code: {response.status_code}")
+        except Exception as e:
+            logging.error(f"Error downloading PDF from {api_source}. URL: {url}. Error: {str(e)}")
+        return None
 
     def download_or_get_abstract_pubmed(self, pmid, title):
         paper = self.fetch_paper_details_pubmed(pmid)
-        if paper and paper['abstract']:
-            filename = self.get_valid_filename(title + '_abstract.txt')
-            filepath = os.path.join(self.download_dir, filename)
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(paper['abstract'])
-            return {'type': 'abstract', 'path': filepath}
-        else:
-            print(f"无法获取PubMed摘要: {pmid}")
-            return None
+        if paper:
+            if paper.get('full_text_link'):
+                pdf_result = self.download_pdf(paper['full_text_link'], title, 'pubmed')
+                if pdf_result:
+                    return pdf_result
+            if paper['abstract']:
+                filename = self.get_valid_filename(title + '.txt')  # 修改这里，使用 .txt 扩展名
+                filepath = os.path.join(self.download_dir, filename)
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write(paper['abstract'])
+                logging.info(f"Saved PubMed abstract to {filepath}")
+                return {'type': 'abstract', 'path': filepath}
+        logging.warning(f"无法获取PubMed摘要或全文: {pmid}")
+        return None
 
     def download_or_get_abstract_pmc(self, pmcid, title):
         paper = self.fetch_paper_details_pmc(pmcid)
@@ -206,7 +326,9 @@ class PaperSearcher:
             return None
 
     def get_valid_filename(self, name):
-        return "".join(x for x in name if x.isalnum() or x in [' ', '.', '_']).rstrip()[:50] + '.pdf'
+        # 移除文件扩展名，然后添加适当的扩展名
+        name_without_ext = os.path.splitext(name)[0]
+        return "".join(x for x in name_without_ext if x.isalnum() or x in [' ', '.', '_']).rstrip()[:50]
 
     def download_pdf_pmc(self, pmcid, title):
         url = f"https://www.ncbi.nlm.nih.gov/pmc/articles/PMC{pmcid}/pdf/"
@@ -221,3 +343,19 @@ class PaperSearcher:
         else:
             logging.warning(f"无法下载PMC PDF: {pmcid}")
             return None
+
+    def extract_abstract(self, html_content):
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # 尝试找到摘要
+        abstract = soup.find('section', class_='abstract')
+        if abstract:
+            return abstract.get_text(strip=True)
+        
+        # 如果没有找到明确的摘要，尝试查找其他可能包含摘要的元素
+        possible_abstract = soup.find('meta', attrs={'name': 'description'})
+        if possible_abstract:
+            return possible_abstract.get('content', '')
+
+        return None
+

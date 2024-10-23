@@ -90,26 +90,26 @@ class MainWindow(QMainWindow):
             result = self.paper_searcher.download_or_get_abstract(paper, api_source)
             
             if result:
-                paper_data = {
-                    'title': paper.get('title', ''),
-                    'abstract': paper.get('abstract', ''),
-                    'url': paper.get('url', ''),
-                    'year': paper.get('year'),
-                    'doi': paper.get('doi'),
-                    'pmid': paper.get('pmid'),
-                    'pmcid': paper.get('pmcid')
-                }
-                if result['type'] == 'both':
-                    paper_id = self.paper_manager.add_paper(paper_data, api_source, result['abstract_path'])
-                    self.paper_manager.update_paper_pdf_path(paper_id, result['pdf_path'])
-                    message = f"论文摘要已保存到: {result['abstract_path']}\nPDF已保存到: {result['pdf_path']}"
+                if result['type'] == 'error':
+                    error_message = f"下载失败: {result['message']}"
+                    logging.error(error_message)
+                    QMessageBox.warning(self, "操作失败", error_message)
                 else:
+                    paper_data = {
+                        'title': paper.get('title', ''),
+                        'abstract': paper.get('abstract', ''),
+                        'url': paper.get('url', ''),
+                        'year': paper.get('year'),
+                        'doi': paper.get('doi'),
+                        'pmid': paper.get('pmid'),
+                        'pmcid': paper.get('pmcid')
+                    }
                     paper_id = self.paper_manager.add_paper(paper_data, api_source, result['path'])
-                    message = f"论文摘要已保存到: {result['path']}"
-                logging.info(message)
-                QMessageBox.information(self, "操作成功", message)
+                    message = f"{'PDF' if result['type'] == 'pdf' else '论文摘要'}已保存到: {result['path']}"
+                    logging.info(message)
+                    QMessageBox.information(self, "操作成功", message)
             else:
-                error_message = "无法获取摘要或PDF，请检查控制台输出以获取更多信息"
+                error_message = "无法获取PDF或摘要，请检查控制台输出以获取更多信息"
                 logging.error(error_message)
                 QMessageBox.warning(self, "操作失败", error_message)
         else:
