@@ -1,15 +1,6 @@
 import sqlite3
 import os
-
-class Paper:
-    def __init__(self, title, abstract, url):
-        self.title = title
-        self.abstract = abstract
-        self.url = url
-        self.keywords = set()
-
-    def add_keyword(self, keyword):
-        self.keywords.add(keyword)
+import logging
 
 class PaperManager:
     def __init__(self, db_path='data/papers.db'):
@@ -17,60 +8,46 @@ class PaperManager:
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         self.conn = sqlite3.connect(db_path)
         self.create_table()
-        self.update_table_structure()
 
     def create_table(self):
         cursor = self.conn.cursor()
-        cursor.execute('''
+        sql_statement = '''
             CREATE TABLE IF NOT EXISTS papers
             (id INTEGER PRIMARY KEY, 
-             title TEXT, 
-             abstract TEXT, 
-             url TEXT, 
+             title TEXT UNIQUE, 
+             authors TEXT,
              year INTEGER, 
-             doi TEXT,
+             doi TEXT UNIQUE,
              pmid TEXT,
              pmcid TEXT,
              api_source TEXT,
-             local_path TEXT)
-        ''')
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS keywords
-            (paper_id INTEGER, 
-             keyword TEXT,
-             FOREIGN KEY(paper_id) REFERENCES papers(id))
-        ''')
+             citation_count INTEGER,
+             notes TEXT)
+        '''
+        logging.info(f"Executing SQL: {sql_statement}")
+        cursor.execute(sql_statement)
+        
         self.conn.commit()
 
-    def update_table_structure(self):
-        # 由于我们不再单独存储 pdf_path，这个方法可以保持为空或删除
-        pass
-
-    def add_paper(self, paper, api_source, local_path=None):
+    def add_paper(self, paper, api_source):
         cursor = self.conn.cursor()
         cursor.execute('''
-            INSERT INTO papers (title, abstract, url, year, doi, pmid, pmcid, api_source, local_path)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (paper.get('title', ''), 
-              paper.get('abstract', ''), 
-              paper.get('url', ''), 
-              paper.get('year'), 
-              paper.get('doi'), 
-              paper.get('pmid'),
-              paper.get('pmcid'),
-              api_source, 
-              local_path))
+            INSERT OR REPLACE INTO papers 
+            (title, authors, year, doi, pmid, pmcid, api_source, citation_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            paper.get('title', ''),
+            ', '.join(paper.get('authors', [])),
+            paper.get('year'),
+            paper.get('doi'),
+            paper.get('pmid'),
+            paper.get('pmcid'),
+            api_source,
+            paper.get('citation_count', 0)
+        ))
         paper_id = cursor.lastrowid
         self.conn.commit()
         return paper_id
-
-    def add_keyword_to_paper(self, paper_id, keyword):
-        cursor = self.conn.cursor()
-        cursor.execute('''
-            INSERT INTO keywords (paper_id, keyword)
-            VALUES (?, ?)
-        ''', (paper_id, keyword))
-        self.conn.commit()
 
     def get_all_papers(self):
         cursor = self.conn.cursor()
@@ -82,30 +59,37 @@ class PaperManager:
         cursor.execute('SELECT * FROM papers WHERE id = ?', (paper_id,))
         return cursor.fetchone()
 
-    def update_paper_local_path(self, paper_id, local_path):
-        cursor = self.conn.cursor()
-        cursor.execute('''
-            UPDATE papers SET local_path = ? WHERE id = ?
-        ''', (local_path, paper_id))
-        self.conn.commit()
-
     def get_papers_by_api_source(self, api_source):
         cursor = self.conn.cursor()
         cursor.execute('SELECT * FROM papers WHERE api_source = ?', (api_source,))
         return cursor.fetchall()
 
-    def get_paper_keywords(self, paper_id):
-        cursor = self.conn.cursor()
-        cursor.execute('SELECT keyword FROM keywords WHERE paper_id = ?', (paper_id,))
-        return [row[0] for row in cursor.fetchall()]
-
     def search_papers(self, query):
         cursor = self.conn.cursor()
         cursor.execute('''
             SELECT * FROM papers 
-            WHERE title LIKE ? OR abstract LIKE ?
+            WHERE title LIKE ? OR authors LIKE ?
         ''', (f'%{query}%', f'%{query}%'))
         return cursor.fetchall()
+
+    def update_paper_notes(self, paper_id, notes):
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            UPDATE papers SET notes = ? WHERE id = ?
+        ''', (notes, paper_id))
+        self.conn.commit()
+
+    def get_paper_notes(self, paper_id):
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT notes FROM papers WHERE id = ?', (paper_id,))
+        result = cursor.fetchone()
+        return result[0] if result else ''
+
+    def get_notes_status(self, paper_ids):
+        cursor = self.conn.cursor()
+        placeholders = ','.join('?' * len(paper_ids))
+        cursor.execute(f'SELECT id, CASE WHEN notes != "" THEN 1 ELSE 0 END as has_notes FROM papers WHERE id IN ({placeholders})', paper_ids)
+        return dict(cursor.fetchall())
 
     def __del__(self):
         self.conn.close()

@@ -5,6 +5,13 @@ import xml.etree.ElementTree as ET
 import logging
 from bs4 import BeautifulSoup
 import re
+from functools import lru_cache
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import feedparser
+from datetime import datetime, timedelta
+from urllib.parse import quote
+from dateutil.relativedelta import relativedelta
 
 class PaperSearcher:
     def __init__(self, download_dir='downloads'):
@@ -24,14 +31,59 @@ class PaperSearcher:
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         })
+        self.citation_cache = {}
+        self.max_concurrent_requests = 5  # 最大并发请求数
+        self.cache_expiry = 24 * 60 * 60  # 缓存有效期（秒），这里设置为24小时
 
-    def search_papers_crossref(self, keywords, start_year=None, end_year=None):
+    @lru_cache(maxsize=1000)
+    def get_citation_count(self, identifier, api_source):
+        """
+        获取引用次数，使用缓存来避免重复请求
+        """
+        current_time = time.time()
+        if identifier in self.citation_cache:
+            count, timestamp = self.citation_cache[identifier]
+            if current_time - timestamp < self.cache_expiry:
+                return count
+
+        if api_source == 'crossref':
+            count = self.get_crossref_citation_count(identifier)
+        elif api_source == 'pubmed':
+            count = self.get_pubmed_citation_count(identifier)
+        elif api_source == 'pmc':
+            count = self.get_pmc_citation_count(identifier)
+        else:
+            count = 0
+
+        self.citation_cache[identifier] = (count, current_time)
+        return count
+
+    def get_crossref_citation_count(self, doi):
+        # Crossref API 已经在搜索结果中提供了引用次数，所以这里不需要额外的实现
+        return 0
+
+    def fetch_citation_counts(self, papers, api_source):
+        """
+        使用线程池来并发获取引用次数
+        """
+        with ThreadPoolExecutor(max_workers=self.max_concurrent_requests) as executor:
+            future_to_paper = {executor.submit(self.get_citation_count, paper.get('doi') or paper.get('pmid') or paper.get('pmcid'), api_source): paper for paper in papers}
+            for future in as_completed(future_to_paper):
+                paper = future_to_paper[future]
+                try:
+                    citation_count = future.result()
+                    paper['citation_count'] = citation_count
+                except Exception as exc:
+                    logging.error(f'{paper.get("title")} generated an exception: {exc}')
+                    paper['citation_count'] = 0
+
+    def search_papers_crossref(self, keywords, start_year=None, end_year=None, max_results=10):
         params = {
             'query': keywords,
-            'rows': 10,
+            'rows': max_results,
             'sort': 'relevance',
             'order': 'desc',
-            'select': 'DOI,title,abstract,URL,published-print,type'
+            'select': 'DOI,title,abstract,URL,published-print,published-online,issued,type,is-referenced-by-count,author'
         }
         if start_year and end_year:
             params['filter'] = f'from-pub-date:{start_year},until-pub-date:{end_year}'
@@ -58,11 +110,11 @@ class PaperSearcher:
             logging.error(f"Crossref搜索失败，状态码: {response.status_code}")
             return []
 
-    def search_papers_pubmed(self, keywords, start_year=None, end_year=None):
+    def search_papers_pubmed(self, keywords, start_year=None, end_year=None, max_results=10):
         params = {
             'db': 'pubmed',
             'term': keywords,
-            'retmax': 10,
+            'retmax': max_results,
             'sort': 'relevance',
             'retmode': 'json'
         }
@@ -79,6 +131,7 @@ class PaperSearcher:
                 if paper:
                     papers.append(paper)
                     logging.info(f"PubMed paper found: {paper['title'][:100]}...")
+            self.fetch_citation_counts(papers, 'pubmed')
             return papers
         else:
             logging.error(f"PubMed搜索失败，状态码: {response.status_code}")
@@ -102,8 +155,7 @@ class PaperSearcher:
                     'year': article.findtext(".//PubDate/Year", ''),
                     'pmid': pmid,
                     'type': article.findtext(".//PublicationType", ''),
-                    'authors': [author.findtext(".//LastName", '') + ' ' + author.findtext(".//ForeName", '') for author in article.findall(".//Author")],
-                    'citation_count': self.get_pubmed_citation_count(pmid)  # 获取 PubMed 引用次数
+                    'authors': [author.findtext(".//LastName", '') + ' ' + author.findtext(".//ForeName", '') for author in article.findall(".//Author")]
                 }
                 logging.info(f"PubMed Abstract for {pmid}: {paper['abstract'][:100]}...")
                 return paper
@@ -123,11 +175,11 @@ class PaperSearcher:
         except RequestException:
             return 0
 
-    def search_papers_pmc(self, keywords, start_year=None, end_year=None):
+    def search_papers_pmc(self, keywords, start_year=None, end_year=None, max_results=10):
         params = {
             'db': 'pmc',
             'term': f"{keywords} AND open access[filter]",
-            'retmax': 10,
+            'retmax': max_results,
             'sort': 'relevance',
             'retmode': 'json'
         }
@@ -143,6 +195,7 @@ class PaperSearcher:
                 paper = self.fetch_paper_details_pmc(pmcid)
                 if paper:
                     papers.append(paper)
+            self.fetch_citation_counts(papers, 'pmc')
             return papers
         else:
             print(f"PMC搜索失败，状态码: {response.status_code}")
@@ -166,15 +219,14 @@ class PaperSearcher:
                     'year': article.findtext(".//pub-date/year", ''),
                     'pmcid': pmcid,
                     'type': article.get('article-type', ''),
-                    'authors': [author.findtext(".//surname", '') + ' ' + author.findtext(".//given-names", '') for author in article.findall(".//contrib[@contrib-type='author']")],
-                    'citation_count': self.get_pmc_citation_count(pmcid)  # 获取 PMC 引用次数
+                    'authors': [author.findtext(".//surname", '') + ' ' + author.findtext(".//given-names", '') for author in article.findall(".//contrib[@contrib-type='author']")]
                 }
                 logging.info(f"PMC Abstract for {pmcid}: {paper['abstract'][:100]}...")
                 return paper
         return None
 
     def get_pmc_citation_count(self, pmcid):
-        # PMC 也不直接提供引用次数，我们可以尝试获取 "Cited by" 文章数量
+        # PMC 也不直接提供引用次数，我可以尝试获取 "Cited by" 文章数量
         cited_by_url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi?dbfrom=pmc&linkname=pmc_pmc_citedby&id={pmcid}"
         try:
             response = requests.get(cited_by_url)
@@ -253,7 +305,7 @@ class PaperSearcher:
         if pdf_links:
             return pdf_links[0]['href']
         
-        # 查找特定的下载按钮或链接（这部分可能需要根据不同的出版商网站进行定制）
+        # 查找特定的下载按钮或链接（这部分可能需根据不同的出版商站进行定制）
         download_links = soup.find_all('a', text=re.compile(r'Download PDF', re.I))
         if download_links:
             return download_links[0]['href']
@@ -349,7 +401,7 @@ class PaperSearcher:
             return None
 
     def get_valid_filename(self, name):
-        # 移除文件扩展名，然后添加适当的扩展名
+        # 移除文扩展名，然后添加适当的扩展名
         name_without_ext = os.path.splitext(name)[0]
         return "".join(x for x in name_without_ext if x.isalnum() or x in [' ', '.', '_']).rstrip()[:50]
 
@@ -394,3 +446,70 @@ class PaperSearcher:
             abstract = article.findtext(".//article-meta/abstract", '')
         
         return abstract
+
+    def get_latest_papers_pubmed(self, keywords, max_results=10, weeks=None, months=None):
+        base_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+        
+        if weeks:
+            start_date = datetime.now() - timedelta(weeks=weeks)
+        elif months:
+            start_date = datetime.now() - relativedelta(months=months)
+        else:
+            start_date = datetime.now() - relativedelta(months=1)  # 默认一个月
+        
+        date_string = start_date.strftime("%Y/%m/%d")
+        
+        params = {
+            'db': 'pubmed',
+            'term': f"({keywords}) AND ({date_string}[PDAT] : 3000[PDAT])",
+            'retmax': max_results,
+            'sort': 'date',
+            'retmode': 'json'
+        }
+        
+        logging.info(f"PubMed search URL: {base_url}?{'&'.join([f'{k}={v}' for k, v in params.items()])}")
+        
+        response = requests.get(base_url, params=params)
+        if response.status_code == 200:
+            data = response.json()
+            id_list = data['esearchresult']['idlist']
+            logging.info(f"PubMed IDs found: {len(id_list)}")
+            
+            papers = []
+            for pmid in id_list:
+                paper = self.fetch_paper_details_pubmed(pmid)
+                if paper:
+                    papers.append(paper)
+                    logging.info(f"Added paper: {paper['title']}")
+            
+            logging.info(f"Total papers found: {len(papers)}")
+            self.fetch_citation_counts(papers, 'pubmed')
+            return papers
+        else:
+            logging.error(f"Failed to fetch papers from PubMed. Status code: {response.status_code}")
+            return []
+
+    def fetch_paper_details_pubmed(self, pmid):
+        url = f"{self.pubmed_fetch_url}?db=pubmed&id={pmid}&retmode=xml"
+        response = requests.get(url, headers=self.headers)
+        if response.status_code == 200:
+            root = ET.fromstring(response.content)
+            article = root.find('.//Article')
+            if article is not None:
+                title = article.findtext('.//ArticleTitle', '')
+                abstract = article.findtext('.//Abstract/AbstractText', '')
+                authors = [author.findtext('.//LastName', '') + ' ' + author.findtext('.//ForeName', '') 
+                           for author in article.findall('.//Author')]
+                year = article.findtext('.//PubDate/Year', '')
+                
+                paper = {
+                    'title': title,
+                    'abstract': abstract,
+                    'authors': authors,
+                    'year': year,
+                    'pmid': pmid,
+                    'api_source': 'pubmed'
+                }
+                return paper
+        return None
+
