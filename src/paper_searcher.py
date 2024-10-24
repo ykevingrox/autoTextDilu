@@ -47,12 +47,15 @@ class PaperSearcher:
                     'url': item.get('URL', ''),
                     'year': item.get('published-print', {}).get('date-parts', [['']])[0][0],
                     'doi': item.get('DOI', ''),
-                    'type': item.get('type', '')
+                    'type': item.get('type', ''),
+                    'authors': [author.get('family', '') + ' ' + author.get('given', '') for author in item.get('author', [])],
+                    'citation_count': item.get('is-referenced-by-count', 0)  # Crossref 提供的引用次数
                 }
                 papers.append(paper)
+                logging.info(f"Crossref paper found: {paper['title'][:100]}...")
             return papers
         else:
-            print(f"Crossref搜索失败，状态码: {response.status_code}")
+            logging.error(f"Crossref搜索失败，状态码: {response.status_code}")
             return []
 
     def search_papers_pubmed(self, keywords, start_year=None, end_year=None):
@@ -75,9 +78,10 @@ class PaperSearcher:
                 paper = self.fetch_paper_details_pubmed(pmid)
                 if paper:
                     papers.append(paper)
+                    logging.info(f"PubMed paper found: {paper['title'][:100]}...")
             return papers
         else:
-            print(f"PubMed搜索失败，状态码: {response.status_code}")
+            logging.error(f"PubMed搜索失败，状态码: {response.status_code}")
             return []
 
     def fetch_paper_details_pubmed(self, pmid):
@@ -91,15 +95,33 @@ class PaperSearcher:
             root = ET.fromstring(response.content)
             article = root.find(".//Article")
             if article is not None:
-                return {
+                paper = {
                     'title': article.findtext(".//ArticleTitle", ''),
                     'abstract': article.findtext(".//Abstract/AbstractText", ''),
                     'url': f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
                     'year': article.findtext(".//PubDate/Year", ''),
                     'pmid': pmid,
-                    'type': article.findtext(".//PublicationType", '')
+                    'type': article.findtext(".//PublicationType", ''),
+                    'authors': [author.findtext(".//LastName", '') + ' ' + author.findtext(".//ForeName", '') for author in article.findall(".//Author")],
+                    'citation_count': self.get_pubmed_citation_count(pmid)  # 获取 PubMed 引用次数
                 }
+                logging.info(f"PubMed Abstract for {pmid}: {paper['abstract'][:100]}...")
+                return paper
         return None
+
+    def get_pubmed_citation_count(self, pmid):
+        # PubMed 不直接提供引用次数，我们可以尝试获取 "Cited by" 文章数量
+        cited_by_url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi?dbfrom=pubmed&linkname=pubmed_pubmed_citedin&id={pmid}"
+        try:
+            response = requests.get(cited_by_url)
+            if response.status_code == 200:
+                root = ET.fromstring(response.content)
+                cited_by_count = len(root.findall(".//Link"))
+                return cited_by_count
+            else:
+                return 0
+        except RequestException:
+            return 0
 
     def search_papers_pmc(self, keywords, start_year=None, end_year=None):
         params = {
@@ -137,32 +159,33 @@ class PaperSearcher:
             root = ET.fromstring(response.content)
             article = root.find(".//article")
             if article is not None:
-                # 尝试多种方式获取摘要
-                abstract = ''
-                abstract_element = article.find(".//abstract")
-                if abstract_element is not None:
-                    abstract = ET.tostring(abstract_element, encoding='unicode', method='text').strip()
-                if not abstract:
-                    abstract = ' '.join([ET.tostring(p, encoding='unicode', method='text').strip() for p in article.findall(".//abstract/p")])
-                if not abstract:
-                    abstract = article.findtext(".//article-meta/abstract", '')
-                
-                # 记录摘要内容
-                logging.info(f"PMC Abstract for {pmcid}: {abstract[:100]}...")  # 记录前100个字符
-
-                return {
+                paper = {
                     'title': article.findtext(".//article-title", ''),
-                    'abstract': abstract,
+                    'abstract': self.get_pmc_abstract(article),
                     'url': f"https://www.ncbi.nlm.nih.gov/pmc/articles/PMC{pmcid}/",
                     'year': article.findtext(".//pub-date/year", ''),
                     'pmcid': pmcid,
-                    'type': article.findtext(".//article-type", '')
+                    'type': article.get('article-type', ''),
+                    'authors': [author.findtext(".//surname", '') + ' ' + author.findtext(".//given-names", '') for author in article.findall(".//contrib[@contrib-type='author']")],
+                    'citation_count': self.get_pmc_citation_count(pmcid)  # 获取 PMC 引用次数
                 }
-            else:
-                logging.warning(f"No article found for PMC ID: {pmcid}")
-        else:
-            logging.error(f"Failed to fetch PMC article {pmcid}. Status code: {response.status_code}")
+                logging.info(f"PMC Abstract for {pmcid}: {paper['abstract'][:100]}...")
+                return paper
         return None
+
+    def get_pmc_citation_count(self, pmcid):
+        # PMC 也不直接提供引用次数，我们可以尝试获取 "Cited by" 文章数量
+        cited_by_url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi?dbfrom=pmc&linkname=pmc_pmc_citedby&id={pmcid}"
+        try:
+            response = requests.get(cited_by_url)
+            if response.status_code == 200:
+                root = ET.fromstring(response.content)
+                cited_by_count = len(root.findall(".//Link"))
+                return cited_by_count
+            else:
+                return 0
+        except RequestException:
+            return 0
 
     def download_or_get_abstract(self, paper, api_source):
         """
@@ -359,3 +382,15 @@ class PaperSearcher:
 
         return None
 
+    def get_pmc_abstract(self, article):
+        # 尝试多种方式获取摘要
+        abstract = ''
+        abstract_element = article.find(".//abstract")
+        if abstract_element is not None:
+            abstract = ET.tostring(abstract_element, encoding='unicode', method='text').strip()
+        if not abstract:
+            abstract = ' '.join([ET.tostring(p, encoding='unicode', method='text').strip() for p in article.findall(".//abstract/p")])
+        if not abstract:
+            abstract = article.findtext(".//article-meta/abstract", '')
+        
+        return abstract

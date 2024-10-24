@@ -1,20 +1,21 @@
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                             QPushButton, QLineEdit, QListWidget, QLabel, 
-                             QMessageBox, QComboBox)
-from PyQt6.QtCore import Qt
+                             QPushButton, QLineEdit, QTableWidget, QLabel, 
+                             QMessageBox, QComboBox, QTableWidgetItem, QHeaderView)
+from PyQt6.QtCore import Qt, QSortFilterProxyModel
+from PyQt6.QtGui import QColor
 from .paper_searcher import PaperSearcher
 from .paper_manager import PaperManager
-from datetime import datetime
 import logging
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("学术助手")
-        self.setGeometry(100, 100, 800, 600)
+        self.setGeometry(100, 100, 1000, 600)
 
         self.paper_searcher = PaperSearcher()
         self.paper_manager = PaperManager()
+        self.papers = []
 
         self.setup_ui()
 
@@ -37,8 +38,11 @@ class MainWindow(QMainWindow):
         self.search_input = QLineEdit()
         search_button = QPushButton("搜索")
         search_button.clicked.connect(self.search_papers)
+        clear_button = QPushButton("清空结果")
+        clear_button.clicked.connect(self.clear_results)
         search_layout.addWidget(self.search_input)
         search_layout.addWidget(search_button)
+        search_layout.addWidget(clear_button)
         layout.addLayout(search_layout)
 
         # 年份筛选
@@ -51,9 +55,15 @@ class MainWindow(QMainWindow):
         filter_layout.addWidget(self.end_year)
         layout.addLayout(filter_layout)
 
-        # 论文列表
-        self.paper_list = QListWidget()
-        layout.addWidget(self.paper_list)
+        # 论文表格
+        self.paper_table = QTableWidget()
+        self.paper_table.setColumnCount(5)
+        self.paper_table.setHorizontalHeaderLabels(["标题", "作者", "年份", "引用次数", "API来源"])
+        self.paper_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.paper_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.paper_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.paper_table.setSortingEnabled(True)
+        layout.addWidget(self.paper_table)
 
         # 下载按钮
         self.download_button = QPushButton("下载论文")
@@ -67,22 +77,33 @@ class MainWindow(QMainWindow):
         api_source = self.api_selector.currentText().lower()
 
         if api_source == 'crossref':
-            self.papers = self.paper_searcher.search_papers_crossref(keywords, start_year, end_year)
+            new_papers = self.paper_searcher.search_papers_crossref(keywords, start_year, end_year)
         elif api_source == 'pubmed':
-            self.papers = self.paper_searcher.search_papers_pubmed(keywords, start_year, end_year)
+            new_papers = self.paper_searcher.search_papers_pubmed(keywords, start_year, end_year)
         elif api_source == 'pmc open access':
-            self.papers = self.paper_searcher.search_papers_pmc(keywords, start_year, end_year)
+            new_papers = self.paper_searcher.search_papers_pmc(keywords, start_year, end_year)
 
-        self.paper_list.clear()
-        for paper in self.papers:
-            self.paper_list.addItem(f"{paper['title']} ({paper.get('year', 'N/A')})")
+        for paper in new_papers:
+            paper['api_source'] = api_source
+
+        self.papers.extend(new_papers)
+        self.update_paper_table()
+
+    def update_paper_table(self):
+        self.paper_table.setRowCount(len(self.papers))
+        for row, paper in enumerate(self.papers):
+            self.paper_table.setItem(row, 0, QTableWidgetItem(paper.get('title', '')))
+            self.paper_table.setItem(row, 1, QTableWidgetItem(', '.join(paper.get('authors', []))))
+            self.paper_table.setItem(row, 2, QTableWidgetItem(str(paper.get('year', ''))))
+            self.paper_table.setItem(row, 3, QTableWidgetItem(str(paper.get('citation_count', 'N/A'))))
+            self.paper_table.setItem(row, 4, QTableWidgetItem(paper.get('api_source', '').upper()))
 
     def download_paper(self):
-        selected_items = self.paper_list.selectedItems()
+        selected_items = self.paper_table.selectedItems()
         if selected_items:
-            paper_index = self.paper_list.row(selected_items[0])
-            paper = self.papers[paper_index]
-            api_source = self.api_selector.currentText().lower()
+            row = self.paper_table.row(selected_items[0])
+            paper = self.papers[row]
+            api_source = paper['api_source']
             if api_source == 'pmc open access':
                 api_source = 'pmc'  # 调整为与 PaperSearcher 中的方法名匹配
             
@@ -114,3 +135,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "操作失败", error_message)
         else:
             logging.warning("No paper selected for download")
+
+    def clear_results(self):
+        self.papers.clear()
+        self.paper_table.setRowCount(0)
+        logging.info("搜索结果已清空")
