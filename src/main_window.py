@@ -200,14 +200,16 @@ class MainWindow(QMainWindow):
                 else:
                     paper_data = {
                         'title': paper.get('title', ''),
+                        'authors': paper.get('authors', []),
                         'abstract': paper.get('abstract', ''),
                         'url': paper.get('url', ''),
                         'year': paper.get('year'),
                         'doi': paper.get('doi'),
                         'pmid': paper.get('pmid'),
-                        'pmcid': paper.get('pmcid')
+                        'pmcid': paper.get('pmcid'),
+                        'citation_count': paper.get('citation_count', 0)
                     }
-                    paper_id = self.paper_manager.add_paper(paper_data, api_source, result['path'])
+                    paper_id = self.paper_manager.add_paper(paper_data, api_source)
                     message = f"{'PDF' if result['type'] == 'pdf' else '论文摘要'}已保存到: {result['path']}"
                     logging.info(message)
                     QMessageBox.information(self, "操作成功", message)
