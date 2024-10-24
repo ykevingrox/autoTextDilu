@@ -324,7 +324,7 @@ class PaperSearcher:
     def extract_pdf_url_from_sci_hub(self, html_content):
         soup = BeautifulSoup(html_content, 'html.parser')
         
-        # 查找嵌入的PDF查看器
+        # 查找嵌入��PDF查看器
         embed = soup.find('embed', type='application/pdf')
         if embed and 'src' in embed.attrs:
             return embed['src']
@@ -513,3 +513,24 @@ class PaperSearcher:
                 return paper
         return None
 
+    def download_or_get_abstract(self, paper, api_source):
+        """
+        注意：PDF下载功能仅适用于PubMed和Crossref API。
+        对于其他API源（如PMC），将使用其原有的下载逻辑。
+        """
+        if api_source == 'crossref':
+            return self.download_or_get_abstract_crossref(paper['doi'], paper['title'])
+        elif api_source == 'pubmed':
+            return self.download_or_get_abstract_pubmed(paper['pmid'], paper['title'])
+        elif api_source == 'pmc':
+            return self.download_pdf_pmc(paper['pmcid'], paper['title'])
+        else:
+            logging.warning(f"Unsupported API source: {api_source}")
+            return None
+
+        if result and result['type'] != 'error':
+            paper['downloaded'] = True
+        else:
+            paper['downloaded'] = False
+
+        return result

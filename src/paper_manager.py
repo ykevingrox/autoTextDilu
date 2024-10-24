@@ -22,7 +22,8 @@ class PaperManager:
              pmcid TEXT,
              api_source TEXT,
              citation_count INTEGER,
-             notes TEXT)
+             notes TEXT,
+             downloaded BOOLEAN DEFAULT FALSE)
         '''
         logging.info(f"Executing SQL: {sql_statement}")
         cursor.execute(sql_statement)
@@ -33,8 +34,8 @@ class PaperManager:
         cursor = self.conn.cursor()
         cursor.execute('''
             INSERT OR REPLACE INTO papers 
-            (title, authors, year, doi, pmid, pmcid, api_source, citation_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (title, authors, year, doi, pmid, pmcid, api_source, citation_count, downloaded)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             paper.get('title', ''),
             ', '.join(paper.get('authors', [])),
@@ -43,11 +44,19 @@ class PaperManager:
             paper.get('pmid'),
             paper.get('pmcid'),
             api_source,
-            paper.get('citation_count', 0)
+            paper.get('citation_count', 0),
+            paper.get('downloaded', False)
         ))
         paper_id = cursor.lastrowid
         self.conn.commit()
         return paper_id
+
+    def update_paper_download_status(self, paper_id, downloaded):
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            UPDATE papers SET downloaded = ? WHERE id = ?
+        ''', (downloaded, paper_id))
+        self.conn.commit()
 
     def get_all_papers(self):
         cursor = self.conn.cursor()

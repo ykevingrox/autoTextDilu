@@ -93,8 +93,8 @@ class MainWindow(QMainWindow):
 
         # 论文表格
         self.paper_table = QTableWidget()
-        self.paper_table.setColumnCount(6)
-        self.paper_table.setHorizontalHeaderLabels(["标题", "作者", "年份", "引用次数", "API来源", "笔记"])
+        self.paper_table.setColumnCount(7)
+        self.paper_table.setHorizontalHeaderLabels(["标题", "作者", "年份", "引用次数", "API来源", "笔记", "下载状态"])
         self.paper_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.paper_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.paper_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -102,8 +102,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.paper_table)
 
         # 下载按钮
-        self.download_button = QPushButton("下载论文")
-        self.download_button.clicked.connect(self.download_paper)
+        self.download_button = QPushButton("一键下载全部论文")
+        self.download_button.clicked.connect(self.download_all_papers)
         layout.addWidget(self.download_button)
 
         # 添加笔记按钮
@@ -178,47 +178,27 @@ class MainWindow(QMainWindow):
                 has_notes = "无"
             self.paper_table.setItem(row, 5, QTableWidgetItem(has_notes))
 
+            # 添加下载状态列
+            download_status = "已下载" if paper.get('downloaded', False) else "未下载"
+            self.paper_table.setItem(row, 6, QTableWidgetItem(download_status))
+
         self.highlight_keywords(self.search_input.text())
 
-    def download_paper(self):
-        selected_items = self.paper_table.selectedItems()
-        if selected_items:
-            row = self.paper_table.row(selected_items[0])
-            paper = self.papers[row]
+    def download_all_papers(self):
+        for paper in self.papers:
             api_source = paper['api_source']
-            if api_source == 'pmc open access':
-                api_source = 'pmc'
-            
-            logging.info(f"Attempting to download paper: {paper.get('title', 'Unknown Title')}")
             result = self.paper_searcher.download_or_get_abstract(paper, api_source)
             
-            if result:
-                if result['type'] == 'error':
-                    error_message = f"下载失败: {result['message']}"
-                    logging.error(error_message)
-                    QMessageBox.warning(self, "操作失败", error_message)
-                else:
-                    paper_data = {
-                        'title': paper.get('title', ''),
-                        'authors': paper.get('authors', []),
-                        'abstract': paper.get('abstract', ''),
-                        'url': paper.get('url', ''),
-                        'year': paper.get('year'),
-                        'doi': paper.get('doi'),
-                        'pmid': paper.get('pmid'),
-                        'pmcid': paper.get('pmcid'),
-                        'citation_count': paper.get('citation_count', 0)
-                    }
-                    paper_id = self.paper_manager.add_paper(paper_data, api_source)
-                    message = f"{'PDF' if result['type'] == 'pdf' else '论文摘要'}已保存到: {result['path']}"
-                    logging.info(message)
-                    QMessageBox.information(self, "操作成功", message)
+            if result and result['type'] != 'error':
+                paper['downloaded'] = True
+                paper_id = paper.get('id')
+                if paper_id:
+                    self.paper_manager.update_paper_download_status(paper_id, True)
             else:
-                error_message = "无法获取PDF或摘要，请检查控制台输出以获取更多信息"
-                logging.error(error_message)
-                QMessageBox.warning(self, "操作失败", error_message)
-        else:
-            logging.warning("No paper selected for download")
+                paper['downloaded'] = False
+
+        self.update_paper_table()
+        QMessageBox.information(self, "下载完成", "所有论文下载尝试已完成")
 
     def clear_results(self):
         self.papers.clear()
