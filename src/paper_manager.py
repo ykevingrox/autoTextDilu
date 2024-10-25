@@ -57,9 +57,32 @@ class PaperManager:
         self.conn.commit()
 
     def get_all_papers(self):
-        cursor = self.conn.cursor()
-        cursor.execute('SELECT * FROM papers')
-        return cursor.fetchall()
+        """获取数据库中的所有论文"""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT id, title, authors, year, citation_count, api_source, 
+                       doi, downloaded, notes, ai_notes
+                FROM papers
+            """)
+            papers = []
+            for row in cursor.fetchall():
+                papers.append({
+                    'id': row[0],
+                    'title': row[1],
+                    'authors': row[2],
+                    'year': row[3],
+                    'citation_count': row[4],
+                    'api_source': row[5],
+                    'doi': row[6],
+                    'downloaded': bool(row[7]),
+                    'notes': row[8],
+                    'ai_notes': row[9]
+                })
+            return papers
+        except Exception as e:
+            logging.error(f"获取所有论文时发生错误: {str(e)}")
+            return []
 
     def get_paper_by_id(self, paper_id):
         cursor = self.conn.cursor()
@@ -113,6 +136,28 @@ class PaperManager:
         except Exception as e:
             error_msg = f"更新AI笔记时发生错误: {str(e)}"
             logging.error(error_msg, exc_info=True)
+            raise
+
+    def get_paper_ai_notes(self, paper_id: str) -> str:
+        """获取论文的AI笔记"""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT ai_notes FROM papers WHERE id = ?", (paper_id,))
+            result = cursor.fetchone()
+            return result[0] if result and result[0] else ""
+        except Exception as e:
+            logging.error(f"获取AI笔记时发生错误: {str(e)}")
+            return ""
+
+    def delete_paper(self, paper_id):
+        """从数据库中删除指定论文"""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("DELETE FROM papers WHERE id = ?", (paper_id,))
+            self.conn.commit()
+            logging.info(f"已删除论文 ID: {paper_id}")
+        except Exception as e:
+            logging.error(f"删除论文时发生错误: {str(e)}")
             raise
 
     def __del__(self):

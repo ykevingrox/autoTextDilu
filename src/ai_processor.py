@@ -11,12 +11,14 @@ class AIProcessor:
 
     def process_paper(self, paper_path: str) -> str:
         """处理单篇论文并返回AI分析结果"""
-        logging.info(f"开始处理论文: {paper_path}")
+        logging.info(f"开始处理论文文件: {paper_path}")
         try:
             # 读取文件内容
             with open(paper_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-                logging.info(f"成功读取论文内容，长度: {len(content)} 字符")
+                logging.info(f"成功读取论文内容，内容长度: {len(content)}")
+                if not content.strip():
+                    return "文件内容为空"
 
             # 构建提示词
             prompt = """请分析这篇论文，并提供以下信息：
@@ -39,21 +41,31 @@ class AIProcessor:
                 result_format='message'
             )
             
-            logging.info(f"API响应状态码: {response.status_code}")
-            
-            if response.status_code == 200:
-                result = response.output.text
-                logging.info(f"API调用成功，返回结果长度: {len(result)} 字符")
-                return result
+            if response and response.status_code == 200:
+                # 从choices中获取内容
+                if (hasattr(response, 'output') and 
+                    hasattr(response.output, 'choices') and 
+                    response.output.choices and 
+                    len(response.output.choices) > 0 and 
+                    'message' in response.output.choices[0] and 
+                    'content' in response.output.choices[0]['message']):
+                    
+                    result = response.output.choices[0]['message']['content']
+                    logging.info(f"成功提取AI分析结果，长度: {len(result)}")
+                    return result
+                else:
+                    error_msg = "API响应格式不符合预期"
+                    logging.error(f"{error_msg}: {response}")
+                    return error_msg
             else:
-                error_msg = f"API调用失败: {response.status_code}, 响应内容: {response}"
+                error_msg = f"API调用失败: {response.status_code if response else 'No response'}"
                 logging.error(error_msg)
-                return f"AI分析失败: {error_msg}"
+                return error_msg
 
         except Exception as e:
             error_msg = f"处理论文时发生错误: {str(e)}"
-            logging.error(error_msg, exc_info=True)  # 添加完整的异常堆栈信息
-            return f"处理失败: {str(e)}"
+            logging.error(error_msg, exc_info=True)
+            return error_msg
 
     def batch_process_papers(self, papers: List[Dict]) -> Dict[str, str]:
         """批量处理论文并返回结果字典"""

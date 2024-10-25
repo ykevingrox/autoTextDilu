@@ -7,6 +7,7 @@ from PyQt6.QtGui import QColor
 from .paper_searcher import PaperSearcher
 from .paper_manager import PaperManager
 from .ai_processor import AIProcessor
+from .database_viewer import DatabaseViewer
 import logging
 import os
 from dotenv import load_dotenv
@@ -133,6 +134,16 @@ class MainWindow(QMainWindow):
         self.ai_button = QPushButton("AI分析论文")
         self.ai_button.clicked.connect(self.process_papers_with_ai)
         layout.addWidget(self.ai_button)
+
+        # 添加查看AI笔记按钮
+        self.view_ai_notes_button = QPushButton("查看AI笔记")
+        self.view_ai_notes_button.clicked.connect(self.open_ai_notes_dialog)
+        layout.addWidget(self.view_ai_notes_button)
+
+        # 添加数据库浏览按钮
+        self.db_viewer_button = QPushButton("浏览数据库")
+        self.db_viewer_button.clicked.connect(self.open_database_viewer)
+        layout.addWidget(self.db_viewer_button)
 
     def on_api_changed(self, text):
         # 当选择 "PubMed Recent" 时显示时间范围选择器
@@ -292,7 +303,7 @@ class MainWindow(QMainWindow):
             # 更新表格显示
             logging.info("更新表格显示")
             self.update_paper_table()
-            logging.info("AI处理流程完成")
+            logging.info("AI���理流程完成")
             QMessageBox.information(self, "完成", "AI分析已完成")
             
         except Exception as e:
@@ -301,3 +312,28 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "错误", f"AI处理失败: {str(e)}")
         finally:
             progress.close()
+
+    def open_ai_notes_dialog(self):
+        selected_rows = self.paper_table.selectionModel().selectedRows()
+        if selected_rows:
+            row = selected_rows[0].row()
+            paper = self.papers[row]
+            paper_id = paper.get('id')
+            if paper_id:
+                ai_notes = self.paper_manager.get_paper_ai_notes(paper_id)
+                if ai_notes:
+                    dialog = NotesDialog(self, ai_notes)
+                    dialog.setWindowTitle("AI笔记")
+                    dialog.notes_edit.setReadOnly(True)  # AI笔记设为只读
+                    dialog.exec()
+                else:
+                    QMessageBox.information(self, "提示", "该论文暂无AI笔记")
+            else:
+                QMessageBox.warning(self, "错误", "无法获取论文ID")
+        else:
+            QMessageBox.warning(self, "错误", "请先选择一篇论文")
+
+    def open_database_viewer(self):
+        """打开数据库浏览器窗口"""
+        self.db_viewer = DatabaseViewer(self.paper_manager)
+        self.db_viewer.show()
