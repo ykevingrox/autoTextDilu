@@ -1,0 +1,8 @@
+requests
+scholarly
+PyQt6
+PyPDF2
+beautifulsoup4
+dashscope
+python-dotenv
+excludes=['matplotlib', 'numpy', 'PIL']
