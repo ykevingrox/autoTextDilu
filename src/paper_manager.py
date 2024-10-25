@@ -23,7 +23,8 @@ class PaperManager:
              api_source TEXT,
              citation_count INTEGER,
              notes TEXT,
-             downloaded BOOLEAN DEFAULT FALSE)
+             downloaded BOOLEAN DEFAULT FALSE,
+             ai_notes TEXT)
         ''')
         self.conn.commit()
 
@@ -96,6 +97,23 @@ class PaperManager:
         placeholders = ','.join('?' * len(paper_ids))
         cursor.execute(f'SELECT id, CASE WHEN notes != "" THEN 1 ELSE 0 END as has_notes FROM papers WHERE id IN ({placeholders})', paper_ids)
         return dict(cursor.fetchall())
+
+    def update_paper_ai_notes(self, paper_id: str, ai_notes: str):
+        """更新论文的AI笔记"""
+        logging.info(f"开始更新论文AI笔记，ID: {paper_id}")
+        try:
+            # 直接使用 self.conn 而不是 get_db_connection
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "UPDATE papers SET ai_notes = ? WHERE id = ?",
+                (ai_notes, paper_id)
+            )
+            self.conn.commit()
+            logging.info(f"成功更新论文AI笔记，ID: {paper_id}, 影响行数: {cursor.rowcount}")
+        except Exception as e:
+            error_msg = f"更新AI笔记时发生错误: {str(e)}"
+            logging.error(error_msg, exc_info=True)
+            raise
 
     def __del__(self):
         self.conn.close()

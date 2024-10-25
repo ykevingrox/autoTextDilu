@@ -1,12 +1,15 @@
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QLineEdit, QTableWidget, QLabel, 
                              QMessageBox, QComboBox, QTableWidgetItem, QHeaderView,
-                             QDialog, QTextEdit)
+                             QDialog, QTextEdit, QProgressDialog)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
 from .paper_searcher import PaperSearcher
 from .paper_manager import PaperManager
+from .ai_processor import AIProcessor
 import logging
+import os
+from dotenv import load_dotenv
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
@@ -45,6 +48,10 @@ class MainWindow(QMainWindow):
         self.paper_manager = PaperManager()
         self.papers = []
         self.max_results = 10  # 默认值
+
+        # 加载环境变量
+        load_dotenv()
+        self.ai_processor = AIProcessor(os.getenv('DASHSCOPE_API_KEY'))
 
         self.setup_ui()
 
@@ -93,8 +100,8 @@ class MainWindow(QMainWindow):
 
         # 论文表格
         self.paper_table = QTableWidget()
-        self.paper_table.setColumnCount(9)  # 增加到9列，包括ID列
-        self.paper_table.setHorizontalHeaderLabels(["标题", "作者", "年份", "引用次数", "API来源", "DOI", "ID", "笔记", "下载状态"])
+        self.paper_table.setColumnCount(10)  # 增加到10列，包括ID列
+        self.paper_table.setHorizontalHeaderLabels(["标题", "作者", "年份", "引用次数", "API来源", "DOI", "ID", "笔记", "下载状态", "AI笔记"])
         self.paper_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.paper_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.paper_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -121,6 +128,11 @@ class MainWindow(QMainWindow):
         max_results_layout.addWidget(max_results_label)
         max_results_layout.addWidget(self.max_results_selector)
         layout.addLayout(max_results_layout)
+
+        # 添加AI分析按钮
+        self.ai_button = QPushButton("AI分析论文")
+        self.ai_button.clicked.connect(self.process_papers_with_ai)
+        layout.addWidget(self.ai_button)
 
     def on_api_changed(self, text):
         # 当选择 "PubMed Recent" 时显示时间范围选择器
@@ -180,6 +192,10 @@ class MainWindow(QMainWindow):
             download_status = "已下载" if paper.get('downloaded', False) else "未下载"
             self.paper_table.setItem(row, 8, QTableWidgetItem(download_status))
 
+            ai_notes = paper.get('ai_notes', '')
+            ai_notes_status = "有" if ai_notes else "无"
+            self.paper_table.setItem(row, 9, QTableWidgetItem(ai_notes_status))
+
         self.highlight_keywords(self.search_input.text())
 
     def download_all_papers(self):
@@ -237,3 +253,51 @@ class MainWindow(QMainWindow):
                     else:
                         item.setBackground(QColor(255, 255, 255))  # 白色背景
 
+    def process_papers_with_ai(self):
+        logging.info("开始AI论文处理流程")
+        
+        # 检查是否有已下载的论文
+        downloaded_papers = [p for p in self.papers if p.get('downloaded', False)]
+        logging.info(f"找到 {len(downloaded_papers)} 篇已下载的论文")
+        
+        if not downloaded_papers:
+            logging.warning("没有找到已下载的论文")
+            QMessageBox.warning(self, "警告", "没有找到已下载的论文")
+            return
+
+        # 显示进度对话框
+        progress = QProgressDialog("正在进行AI分析...", "取消", 0, len(downloaded_papers), self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.show()
+
+        try:
+            logging.info("开始调用AI处理器进行批量处理")
+            # 批量处理论文
+            results = self.ai_processor.batch_process_papers(downloaded_papers)
+            logging.info(f"AI处理完成，获得 {len(results)} 个结果")
+            
+            # 更新数据库和表格
+            for paper in downloaded_papers:
+                paper_id = paper['id']
+                logging.info(f"正在处理论文 ID: {paper_id}")
+                
+                if paper_id in results:
+                    ai_notes = results[paper_id]
+                    logging.info(f"更新论文AI笔记，ID: {paper_id}, 笔记长度: {len(ai_notes)}")
+                    self.paper_manager.update_paper_ai_notes(paper_id, ai_notes)
+                    paper['ai_notes'] = ai_notes
+                else:
+                    logging.warning(f"未找到论文的AI处理结果，ID: {paper_id}")
+            
+            # 更新表格显示
+            logging.info("更新表格显示")
+            self.update_paper_table()
+            logging.info("AI处理流程完成")
+            QMessageBox.information(self, "完成", "AI分析已完成")
+            
+        except Exception as e:
+            error_msg = f"AI处理过程中发生错误: {str(e)}"
+            logging.error(error_msg, exc_info=True)
+            QMessageBox.warning(self, "错误", f"AI处理失败: {str(e)}")
+        finally:
+            progress.close()
