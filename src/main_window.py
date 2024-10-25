@@ -93,8 +93,8 @@ class MainWindow(QMainWindow):
 
         # 论文表格
         self.paper_table = QTableWidget()
-        self.paper_table.setColumnCount(8)  # 增加一列用于DOI
-        self.paper_table.setHorizontalHeaderLabels(["标题", "作者", "年份", "引用次数", "API来源", "DOI", "笔记", "下载状态"])
+        self.paper_table.setColumnCount(9)  # 增加到9列，包括ID列
+        self.paper_table.setHorizontalHeaderLabels(["标题", "作者", "年份", "引用次数", "API来源", "DOI", "ID", "笔记", "下载状态"])
         self.paper_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.paper_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.paper_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -150,9 +150,9 @@ class MainWindow(QMainWindow):
 
             if new_papers:
                 for paper in new_papers:
-                    paper_id = self.paper_manager.add_paper(paper, api_source)
+                    paper_id = self.paper_manager.add_paper(paper, paper['api_source'])  # 使用 paper['api_source']
                     paper['id'] = paper_id
-                    logging.info(f"Added paper to database: {paper['title']} DOI: {paper.get('doi', 'N/A')}")
+                    logging.info(f"Added paper to database: {paper['title']} ID: {paper_id}")
 
                 self.papers = new_papers
                 self.update_paper_table()
@@ -170,19 +170,15 @@ class MainWindow(QMainWindow):
             self.paper_table.setItem(row, 2, QTableWidgetItem(str(paper.get('year', 'N/A'))))
             self.paper_table.setItem(row, 3, QTableWidgetItem(str(paper.get('citation_count', 'N/A'))))
             self.paper_table.setItem(row, 4, QTableWidgetItem(paper.get('api_source', '').upper()))
-            self.paper_table.setItem(row, 5, QTableWidgetItem(paper.get('doi', 'N/A')))  # 添加DOI列
+            self.paper_table.setItem(row, 5, QTableWidgetItem(paper.get('doi', 'N/A')))
+            self.paper_table.setItem(row, 6, QTableWidgetItem(str(paper.get('id', 'N/A'))))  # 显示编辑过的DOI作为ID
             
-            paper_id = paper.get('id')
-            if paper_id:
-                notes = self.paper_manager.get_paper_notes(paper_id)
-                has_notes = "有" if notes and notes.strip() else "无"
-            else:
-                has_notes = "无"
-            self.paper_table.setItem(row, 6, QTableWidgetItem(has_notes))
+            notes = self.paper_manager.get_paper_notes(paper['id'])
+            has_notes = "有" if notes and notes.strip() else "无"
+            self.paper_table.setItem(row, 7, QTableWidgetItem(has_notes))
 
-            # 添加下载状态列
             download_status = "已下载" if paper.get('downloaded', False) else "未下载"
-            self.paper_table.setItem(row, 7, QTableWidgetItem(download_status))
+            self.paper_table.setItem(row, 8, QTableWidgetItem(download_status))
 
         self.highlight_keywords(self.search_input.text())
 
@@ -240,3 +236,4 @@ class MainWindow(QMainWindow):
                         item.setBackground(QColor(255, 255, 0, 100))  # 浅黄色背景
                     else:
                         item.setBackground(QColor(255, 255, 255))  # 白色背景
+

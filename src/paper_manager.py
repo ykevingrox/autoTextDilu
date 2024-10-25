@@ -11,45 +11,42 @@ class PaperManager:
 
     def create_table(self):
         cursor = self.conn.cursor()
-        sql_statement = '''
+        cursor.execute('''
             CREATE TABLE IF NOT EXISTS papers
-            (id INTEGER PRIMARY KEY, 
-             title TEXT UNIQUE, 
+            (id TEXT PRIMARY KEY, 
+             title TEXT, 
              authors TEXT,
              year INTEGER, 
-             doi TEXT UNIQUE,
+             doi TEXT,
              pmid TEXT,
              pmcid TEXT,
              api_source TEXT,
              citation_count INTEGER,
              notes TEXT,
              downloaded BOOLEAN DEFAULT FALSE)
-        '''
-        logging.info(f"Executing SQL: {sql_statement}")
-        cursor.execute(sql_statement)
-        
+        ''')
         self.conn.commit()
 
     def add_paper(self, paper, api_source):
         cursor = self.conn.cursor()
         cursor.execute('''
             INSERT OR REPLACE INTO papers 
-            (title, authors, year, doi, pmid, pmcid, api_source, citation_count, downloaded)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, title, authors, year, doi, pmid, pmcid, api_source, citation_count, downloaded)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
+            str(paper['id']),  # 确保 id 是字符串
             paper.get('title', ''),
             ', '.join(paper.get('authors', [])),
             paper.get('year'),
-            paper.get('doi', ''),  # 确保DOI被保存
-            paper.get('pmid'),
-            paper.get('pmcid'),
+            paper.get('doi', ''),
+            paper.get('pmid', ''),
+            paper.get('pmcid', ''),
             api_source,
             paper.get('citation_count', 0),
-            paper.get('downloaded', False)
+            1 if paper.get('downloaded', False) else 0
         ))
-        paper_id = cursor.lastrowid
         self.conn.commit()
-        return paper_id
+        return paper['id']
 
     def update_paper_download_status(self, paper_id, downloaded):
         cursor = self.conn.cursor()

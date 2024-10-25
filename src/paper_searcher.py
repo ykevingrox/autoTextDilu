@@ -93,18 +93,22 @@ class PaperSearcher:
             data = response.json()
             papers = []
             for item in data['message']['items']:
+                doi = item.get('DOI', '')
+                unique_id = self.generate_unique_id(doi)
                 paper = {
+                    'id': str(unique_id),  # 添加唯一ID
                     'title': item.get('title', [''])[0],
                     'abstract': item.get('abstract', ''),
                     'url': item.get('URL', ''),
                     'year': item.get('published-print', {}).get('date-parts', [['']])[0][0],
-                    'doi': item.get('DOI', ''),
+                    'doi': doi,
                     'type': item.get('type', ''),
                     'authors': [author.get('family', '') + ' ' + author.get('given', '') for author in item.get('author', [])],
-                    'citation_count': item.get('is-referenced-by-count', 0)  # Crossref 提供的引用次数
+                    'citation_count': item.get('is-referenced-by-count', 0),
+                    'api_source': 'crossref'  # 添加这一行
                 }
                 papers.append(paper)
-                logging.info(f"Crossref paper found: {paper['title'][:100]}...")
+                logging.info(f"Crossref paper found: {paper['title'][:100]}... DOI: {doi}")
             return papers
         else:
             logging.error(f"Crossref搜索失败，状态码: {response.status_code}")
@@ -129,8 +133,9 @@ class PaperSearcher:
             for pmid in id_list:
                 paper = self.fetch_paper_details_pubmed(pmid)
                 if paper:
+                    paper['api_source'] = 'pubmed'  # 添加这一行
                     papers.append(paper)
-                    logging.info(f"PubMed paper found: {paper['title'][:100]}...")
+                    logging.info(f"PubMed paper found: {paper['title'][:100]}... DOI: {paper.get('doi', 'N/A')}")
             self.fetch_citation_counts(papers, 'pubmed')
             return papers
         else:
@@ -148,13 +153,15 @@ class PaperSearcher:
             root = ET.fromstring(response.content)
             article = root.find(".//PubmedArticle")
             if article is not None:
-                # 尝试多种方式获取DOI
                 doi = (article.findtext(".//ArticleId[@IdType='doi']") or
                        article.findtext(".//ELocationID[@EIdType='doi']") or
                        article.findtext(".//PubmedData/ArticleIdList/ArticleId[@IdType='doi']") or
                        '')
                 
+                unique_id = self.generate_unique_id(doi)
+                
                 paper = {
+                    'id': str(unique_id),
                     'title': article.findtext(".//ArticleTitle", ''),
                     'abstract': article.findtext(".//AbstractText", ''),
                     'url': f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
@@ -162,7 +169,8 @@ class PaperSearcher:
                     'pmid': pmid,
                     'type': article.findtext(".//PublicationType", ''),
                     'authors': [author.findtext(".//LastName", '') + ' ' + author.findtext(".//ForeName", '') for author in article.findall(".//Author")],
-                    'doi': doi
+                    'doi': doi,
+                    'api_source': 'pubmed'  # 添加这一行
                 }
                 logging.info(f"PubMed paper found: {paper['title'][:100]}... DOI: {doi}")
                 return paper
@@ -186,27 +194,34 @@ class PaperSearcher:
     def search_papers_pmc(self, keywords, start_year=None, end_year=None, max_results=10):
         params = {
             'db': 'pmc',
-            'term': f"{keywords} AND open access[filter]",
+            'term': keywords,
             'retmax': max_results,
             'sort': 'relevance',
-            'retmode': 'json'
+            'retmode': 'xml'
         }
         if start_year and end_year:
             params['term'] += f" AND ({start_year}[PDAT]:{end_year}[PDAT])"
 
         response = requests.get(self.pmc_search_url, params=params, headers=self.headers)
         if response.status_code == 200:
-            data = response.json()
-            id_list = data['esearchresult']['idlist']
+            root = ET.fromstring(response.content)
+            id_list = [id_elem.text for id_elem in root.findall('.//IdList/Id')]
             papers = []
             for pmcid in id_list:
                 paper = self.fetch_paper_details_pmc(pmcid)
                 if paper:
+                    # 确保每篇论文都有一个唯一的ID
+                    doi = paper.get('doi', '')
+                    unique_id = self.generate_unique_id(doi)
+                    paper['id'] = str(unique_id)
+                    paper['api_source'] = 'pmc'  # 添加这一行
+                    
                     papers.append(paper)
+                    logging.info(f"PMC paper found: {paper['title'][:100]}... DOI: {paper.get('doi', 'N/A')}")
             self.fetch_citation_counts(papers, 'pmc')
             return papers
         else:
-            print(f"PMC搜索失败，状态码: {response.status_code}")
+            logging.error(f"PMC搜索失败，状态码: {response.status_code}")
             return []
 
     def fetch_paper_details_pmc(self, pmcid):
@@ -218,9 +233,12 @@ class PaperSearcher:
         response = requests.get(self.pmc_fetch_url, params=params, headers=self.headers)
         if response.status_code == 200:
             root = ET.fromstring(response.content)
-            article = root.find(".//article")
+            article = root.find('.//article')
             if article is not None:
+                doi = article.findtext(".//article-id[@pub-id-type='doi']", '')
+                unique_id = self.generate_unique_id(doi)
                 paper = {
+                    'id': str(unique_id),  # 确保 id 是字符串
                     'title': article.findtext(".//article-title", ''),
                     'abstract': self.get_pmc_abstract(article),
                     'url': f"https://www.ncbi.nlm.nih.gov/pmc/articles/PMC{pmcid}/",
@@ -228,10 +246,11 @@ class PaperSearcher:
                     'pmcid': pmcid,
                     'type': article.get('article-type', ''),
                     'authors': [author.findtext(".//surname", '') + ' ' + author.findtext(".//given-names", '') for author in article.findall(".//contrib[@contrib-type='author']")],
-                    'doi': article.findtext(".//article-id[@pub-id-type='doi']", '')  # 添加DOI
+                    'doi': doi
                 }
-                logging.info(f"PMC Abstract for {pmcid}: {paper['abstract'][:100]}...")
+                logging.info(f"PMC paper details fetched: {paper['title'][:100]}... DOI: {doi}")
                 return paper
+        logging.warning(f"Failed to fetch paper details for PMCID: {pmcid}")
         return None
 
     def get_pmc_citation_count(self, pmcid):
@@ -253,17 +272,18 @@ class PaperSearcher:
         注意：PDF下载功能仅适用于PubMed和Crossref API。
         对于其他API源（如PMC），将使用其原有的下载逻辑。
         """
+        doi = paper.get('doi', '')
         if api_source == 'crossref':
-            return self.download_or_get_abstract_crossref(paper['doi'], paper['title'])
+            return self.download_or_get_abstract_crossref(doi, doi, api_source)
         elif api_source == 'pubmed':
-            return self.download_or_get_abstract_pubmed(paper['pmid'], paper['title'])
+            return self.download_or_get_abstract_pubmed(paper['pmid'], doi, api_source)
         elif api_source == 'pmc':
-            return self.download_pdf_pmc(paper['pmcid'], paper['title'])
+            return self.download_pdf_pmc(paper['pmcid'], doi, api_source)
         else:
             logging.warning(f"Unsupported API source: {api_source}")
             return None
 
-    def download_or_get_abstract_crossref(self, doi, title):
+    def download_or_get_abstract_crossref(self, doi, title, api_source):
         url = f"https://doi.org/{doi}"
         try:
             response = self.session.get(url, allow_redirects=True, timeout=30)
@@ -271,19 +291,19 @@ class PaperSearcher:
             if response.status_code == 200:
                 pdf_url = self.extract_pdf_url(response.url, response.text)
                 if pdf_url:
-                    pdf_result = self.download_pdf(pdf_url, title, 'crossref')
+                    pdf_result = self.download_pdf(pdf_url, doi, api_source)
                     if pdf_result:
                         return pdf_result
                 
                 # 如果无法直接获取PDF，尝试使用Sci-Hub
-                sci_hub_result = self.try_sci_hub(doi, title)
+                sci_hub_result = self.try_sci_hub(doi, title, api_source)
                 if sci_hub_result:
                     return sci_hub_result
 
                 # 如果无法获取PDF，尝试提取摘要
                 abstract = self.extract_abstract(response.text)
                 if abstract:
-                    filename = self.get_valid_filename(title + '.txt')  # 修改这里，使用 .txt 扩展名
+                    filename = self.get_valid_filename(doi + '.txt')  # 使用DOI作为文件名
                     filepath = os.path.join(self.download_dir, filename)
                     with open(filepath, 'w', encoding='utf-8') as f:
                         f.write(abstract)
@@ -321,13 +341,20 @@ class PaperSearcher:
         
         return None
 
-    def try_sci_hub(self, doi, title):
+    def try_sci_hub(self, doi, title, api_source):
         sci_hub_url = f"{self.sci_hub_url}{doi}"
-        response = self.session.get(sci_hub_url)
-        if response.status_code == 200:
-            pdf_url = self.extract_pdf_url_from_sci_hub(response.text)
-            if pdf_url:
-                return self.download_pdf(pdf_url, title)
+        try:
+            response = self.session.get(sci_hub_url)
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                pdf_link = soup.find('iframe', id='pdf')
+                if pdf_link and pdf_link.get('src'):
+                    pdf_url = pdf_link['src']
+                    if pdf_url.startswith('//'):
+                        pdf_url = 'https:' + pdf_url
+                    return self.download_pdf(pdf_url, doi, api_source)
+        except Exception as e:
+            logging.error(f"Error accessing Sci-Hub: {str(e)}")
         return None
 
     def extract_pdf_url_from_sci_hub(self, html_content):
@@ -353,19 +380,19 @@ class PaperSearcher:
         
         return None
 
-    def download_pdf(self, url, title, api_source):
+    def download_pdf(self, url, doi, api_source):
         """
         下载PDF文件。
-        注意：此方法仅用于PubMed和Crossref API。
+        使用DOI作为文件名的一部分。
         """
-        if api_source not in ['pubmed', 'crossref']:
+        if api_source not in ['pubmed', 'crossref', 'pmc']:
             logging.warning(f"PDF download not supported for API source: {api_source}")
             return None
 
         try:
             response = self.session.get(url, stream=True)
             if response.status_code == 200 and response.headers.get('Content-Type', '').startswith('application/pdf'):
-                filename = self.get_valid_filename(title) + '.pdf'  # 修改这里，明确添加 .pdf 扩展名
+                filename = self.get_valid_filename(doi) + '.pdf'
                 filepath = os.path.join(self.download_dir, filename)
                 with open(filepath, 'wb') as f:
                     for chunk in response.iter_content(chunk_size=8192):
@@ -379,15 +406,15 @@ class PaperSearcher:
             logging.error(f"Error downloading PDF from {api_source}. URL: {url}. Error: {str(e)}")
         return None
 
-    def download_or_get_abstract_pubmed(self, pmid, title):
+    def download_or_get_abstract_pubmed(self, pmid, doi, api_source):
         paper = self.fetch_paper_details_pubmed(pmid)
         if paper:
             if paper.get('full_text_link'):
-                pdf_result = self.download_pdf(paper['full_text_link'], title, 'pubmed')
+                pdf_result = self.download_pdf(paper['full_text_link'], doi, api_source)
                 if pdf_result:
                     return pdf_result
             if paper['abstract']:
-                filename = self.get_valid_filename(title + '.txt')  # 修改这里，使用 .txt 扩展名
+                filename = self.get_valid_filename(doi) + '.txt'
                 filepath = os.path.join(self.download_dir, filename)
                 with open(filepath, 'w', encoding='utf-8') as f:
                     f.write(paper['abstract'])
@@ -396,10 +423,10 @@ class PaperSearcher:
         logging.warning(f"无法获取PubMed摘要或全文: {pmid}")
         return None
 
-    def download_or_get_abstract_pmc(self, pmcid, title):
+    def download_or_get_abstract_pmc(self, pmcid, doi, api_source):
         paper = self.fetch_paper_details_pmc(pmcid)
         if paper and paper['abstract']:
-            filename = self.get_valid_filename(title + '_abstract.txt')
+            filename = self.get_valid_filename(doi) + '_abstract.txt'
             filepath = os.path.join(self.download_dir, filename)
             with open(filepath, 'w', encoding='utf-8') as f:
                 f.write(paper['abstract'])
@@ -409,16 +436,27 @@ class PaperSearcher:
             logging.warning(f"无法获取PMC摘要: {pmcid}")
             return None
 
-    def get_valid_filename(self, name):
-        # 移除文扩展名，然后添加适当的扩展名
-        name_without_ext = os.path.splitext(name)[0]
-        return "".join(x for x in name_without_ext if x.isalnum() or x in [' ', '.', '_']).rstrip()[:50]
+    def get_valid_filename(self, text):
+        """
+        将文本转换为有效的文件名。
+        """
+        return re.sub(r'[^\w\-_\. ]', '_', text)
 
-    def download_pdf_pmc(self, pmcid, title):
+    def generate_unique_id(self, doi):
+        """
+        根据DOI生成唯一ID。
+        如果DOI不可用，则使用时间戳。
+        """
+        if doi:
+            return self.get_valid_filename(doi)
+        else:
+            return f"paper_{int(time.time())}"
+
+    def download_pdf_pmc(self, pmcid, doi, api_source):
         url = f"https://www.ncbi.nlm.nih.gov/pmc/articles/PMC{pmcid}/pdf/"
         response = requests.get(url, headers=self.headers)
         if response.status_code == 200:
-            filename = self.get_valid_filename(title + '.pdf')
+            filename = self.get_valid_filename(doi) + '.pdf'
             filepath = os.path.join(self.download_dir, filename)
             with open(filepath, 'wb') as f:
                 f.write(response.content)
@@ -488,6 +526,7 @@ class PaperSearcher:
             for pmid in id_list:
                 paper = self.fetch_paper_details_pubmed(pmid)
                 if paper:
+                    paper['api_source'] = 'pubmed'  # 确保设置 api_source
                     papers.append(paper)
                     logging.info(f"Added paper: {paper['title']} DOI: {paper.get('doi', 'N/A')}")
             
@@ -498,49 +537,18 @@ class PaperSearcher:
             logging.error(f"Failed to fetch papers from PubMed. Status code: {response.status_code}")
             return []
 
-    def fetch_paper_details_pubmed(self, pmid):
-        params = {
-            'db': 'pubmed',
-            'id': pmid,
-            'retmode': 'xml'
-        }
-        response = requests.get(self.pubmed_fetch_url, params=params, headers=self.headers)
-        if response.status_code == 200:
-            root = ET.fromstring(response.content)
-            article = root.find(".//PubmedArticle")
-            if article is not None:
-                # 尝试多种方式获取DOI
-                doi = (article.findtext(".//ArticleId[@IdType='doi']") or
-                       article.findtext(".//ELocationID[@EIdType='doi']") or
-                       article.findtext(".//PubmedData/ArticleIdList/ArticleId[@IdType='doi']") or
-                       '')
-                
-                paper = {
-                    'title': article.findtext(".//ArticleTitle", ''),
-                    'abstract': article.findtext(".//AbstractText", ''),
-                    'url': f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
-                    'year': article.findtext(".//PubDate/Year", ''),
-                    'pmid': pmid,
-                    'type': article.findtext(".//PublicationType", ''),
-                    'authors': [author.findtext(".//LastName", '') + ' ' + author.findtext(".//ForeName", '') for author in article.findall(".//Author")],
-                    'doi': doi
-                }
-                logging.info(f"PubMed paper found: {paper['title'][:100]}... DOI: {doi}")
-                return paper
-        logging.warning(f"Failed to fetch paper details for PMID: {pmid}")
-        return None
-
     def download_or_get_abstract(self, paper, api_source):
         """
         注意：PDF下载功能仅适用于PubMed和Crossref API。
         对于其他API源（如PMC），将使用其原有的下载逻辑。
         """
+        doi = paper.get('doi', '')
         if api_source == 'crossref':
-            return self.download_or_get_abstract_crossref(paper['doi'], paper['title'])
+            return self.download_or_get_abstract_crossref(doi, doi, api_source)
         elif api_source == 'pubmed':
-            return self.download_or_get_abstract_pubmed(paper['pmid'], paper['title'])
+            return self.download_or_get_abstract_pubmed(paper['pmid'], doi, api_source)
         elif api_source == 'pmc':
-            return self.download_pdf_pmc(paper['pmcid'], paper['title'])
+            return self.download_pdf_pmc(paper['pmcid'], doi, api_source)
         else:
             logging.warning(f"Unsupported API source: {api_source}")
             return None
@@ -551,4 +559,6 @@ class PaperSearcher:
             paper['downloaded'] = False
 
         return result
+
+
 
