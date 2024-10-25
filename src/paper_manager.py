@@ -40,7 +40,7 @@ class PaperManager:
             paper.get('title', ''),
             ', '.join(paper.get('authors', [])),
             paper.get('year'),
-            paper.get('doi'),
+            paper.get('doi', ''),  # 确保DOI被保存
             paper.get('pmid'),
             paper.get('pmcid'),
             api_source,

@@ -93,8 +93,8 @@ class MainWindow(QMainWindow):
 
         # 论文表格
         self.paper_table = QTableWidget()
-        self.paper_table.setColumnCount(7)
-        self.paper_table.setHorizontalHeaderLabels(["标题", "作者", "年份", "引用次数", "API来源", "笔记", "下载状态"])
+        self.paper_table.setColumnCount(8)  # 增加一列用于DOI
+        self.paper_table.setHorizontalHeaderLabels(["标题", "作者", "年份", "引用次数", "API来源", "DOI", "笔记", "下载状态"])
         self.paper_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.paper_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.paper_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -152,6 +152,7 @@ class MainWindow(QMainWindow):
                 for paper in new_papers:
                     paper_id = self.paper_manager.add_paper(paper, api_source)
                     paper['id'] = paper_id
+                    logging.info(f"Added paper to database: {paper['title']} DOI: {paper.get('doi', 'N/A')}")
 
                 self.papers = new_papers
                 self.update_paper_table()
@@ -169,6 +170,7 @@ class MainWindow(QMainWindow):
             self.paper_table.setItem(row, 2, QTableWidgetItem(str(paper.get('year', 'N/A'))))
             self.paper_table.setItem(row, 3, QTableWidgetItem(str(paper.get('citation_count', 'N/A'))))
             self.paper_table.setItem(row, 4, QTableWidgetItem(paper.get('api_source', '').upper()))
+            self.paper_table.setItem(row, 5, QTableWidgetItem(paper.get('doi', 'N/A')))  # 添加DOI列
             
             paper_id = paper.get('id')
             if paper_id:
@@ -176,11 +178,11 @@ class MainWindow(QMainWindow):
                 has_notes = "有" if notes and notes.strip() else "无"
             else:
                 has_notes = "无"
-            self.paper_table.setItem(row, 5, QTableWidgetItem(has_notes))
+            self.paper_table.setItem(row, 6, QTableWidgetItem(has_notes))
 
             # 添加下载状态列
             download_status = "已下载" if paper.get('downloaded', False) else "未下载"
-            self.paper_table.setItem(row, 6, QTableWidgetItem(download_status))
+            self.paper_table.setItem(row, 7, QTableWidgetItem(download_status))
 
         self.highlight_keywords(self.search_input.text())
 

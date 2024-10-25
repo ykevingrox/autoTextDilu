@@ -146,19 +146,27 @@ class PaperSearcher:
         response = requests.get(self.pubmed_fetch_url, params=params, headers=self.headers)
         if response.status_code == 200:
             root = ET.fromstring(response.content)
-            article = root.find(".//Article")
+            article = root.find(".//PubmedArticle")
             if article is not None:
+                # 尝试多种方式获取DOI
+                doi = (article.findtext(".//ArticleId[@IdType='doi']") or
+                       article.findtext(".//ELocationID[@EIdType='doi']") or
+                       article.findtext(".//PubmedData/ArticleIdList/ArticleId[@IdType='doi']") or
+                       '')
+                
                 paper = {
                     'title': article.findtext(".//ArticleTitle", ''),
-                    'abstract': article.findtext(".//Abstract/AbstractText", ''),
+                    'abstract': article.findtext(".//AbstractText", ''),
                     'url': f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
                     'year': article.findtext(".//PubDate/Year", ''),
                     'pmid': pmid,
                     'type': article.findtext(".//PublicationType", ''),
-                    'authors': [author.findtext(".//LastName", '') + ' ' + author.findtext(".//ForeName", '') for author in article.findall(".//Author")]
+                    'authors': [author.findtext(".//LastName", '') + ' ' + author.findtext(".//ForeName", '') for author in article.findall(".//Author")],
+                    'doi': doi
                 }
-                logging.info(f"PubMed Abstract for {pmid}: {paper['abstract'][:100]}...")
+                logging.info(f"PubMed paper found: {paper['title'][:100]}... DOI: {doi}")
                 return paper
+        logging.warning(f"Failed to fetch paper details for PMID: {pmid}")
         return None
 
     def get_pubmed_citation_count(self, pmid):
@@ -219,7 +227,8 @@ class PaperSearcher:
                     'year': article.findtext(".//pub-date/year", ''),
                     'pmcid': pmcid,
                     'type': article.get('article-type', ''),
-                    'authors': [author.findtext(".//surname", '') + ' ' + author.findtext(".//given-names", '') for author in article.findall(".//contrib[@contrib-type='author']")]
+                    'authors': [author.findtext(".//surname", '') + ' ' + author.findtext(".//given-names", '') for author in article.findall(".//contrib[@contrib-type='author']")],
+                    'doi': article.findtext(".//article-id[@pub-id-type='doi']", '')  # 添加DOI
                 }
                 logging.info(f"PMC Abstract for {pmcid}: {paper['abstract'][:100]}...")
                 return paper
@@ -324,7 +333,7 @@ class PaperSearcher:
     def extract_pdf_url_from_sci_hub(self, html_content):
         soup = BeautifulSoup(html_content, 'html.parser')
         
-        # 查找嵌入��PDF查看器
+        # 查找嵌入PDF查看器
         embed = soup.find('embed', type='application/pdf')
         if embed and 'src' in embed.attrs:
             return embed['src']
@@ -480,7 +489,7 @@ class PaperSearcher:
                 paper = self.fetch_paper_details_pubmed(pmid)
                 if paper:
                     papers.append(paper)
-                    logging.info(f"Added paper: {paper['title']}")
+                    logging.info(f"Added paper: {paper['title']} DOI: {paper.get('doi', 'N/A')}")
             
             logging.info(f"Total papers found: {len(papers)}")
             self.fetch_citation_counts(papers, 'pubmed')
@@ -490,27 +499,35 @@ class PaperSearcher:
             return []
 
     def fetch_paper_details_pubmed(self, pmid):
-        url = f"{self.pubmed_fetch_url}?db=pubmed&id={pmid}&retmode=xml"
-        response = requests.get(url, headers=self.headers)
+        params = {
+            'db': 'pubmed',
+            'id': pmid,
+            'retmode': 'xml'
+        }
+        response = requests.get(self.pubmed_fetch_url, params=params, headers=self.headers)
         if response.status_code == 200:
             root = ET.fromstring(response.content)
-            article = root.find('.//Article')
+            article = root.find(".//PubmedArticle")
             if article is not None:
-                title = article.findtext('.//ArticleTitle', '')
-                abstract = article.findtext('.//Abstract/AbstractText', '')
-                authors = [author.findtext('.//LastName', '') + ' ' + author.findtext('.//ForeName', '') 
-                           for author in article.findall('.//Author')]
-                year = article.findtext('.//PubDate/Year', '')
+                # 尝试多种方式获取DOI
+                doi = (article.findtext(".//ArticleId[@IdType='doi']") or
+                       article.findtext(".//ELocationID[@EIdType='doi']") or
+                       article.findtext(".//PubmedData/ArticleIdList/ArticleId[@IdType='doi']") or
+                       '')
                 
                 paper = {
-                    'title': title,
-                    'abstract': abstract,
-                    'authors': authors,
-                    'year': year,
+                    'title': article.findtext(".//ArticleTitle", ''),
+                    'abstract': article.findtext(".//AbstractText", ''),
+                    'url': f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
+                    'year': article.findtext(".//PubDate/Year", ''),
                     'pmid': pmid,
-                    'api_source': 'pubmed'
+                    'type': article.findtext(".//PublicationType", ''),
+                    'authors': [author.findtext(".//LastName", '') + ' ' + author.findtext(".//ForeName", '') for author in article.findall(".//Author")],
+                    'doi': doi
                 }
+                logging.info(f"PubMed paper found: {paper['title'][:100]}... DOI: {doi}")
                 return paper
+        logging.warning(f"Failed to fetch paper details for PMID: {pmid}")
         return None
 
     def download_or_get_abstract(self, paper, api_source):
@@ -534,3 +551,4 @@ class PaperSearcher:
             paper['downloaded'] = False
 
         return result
+
